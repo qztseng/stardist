@@ -23,6 +23,7 @@ from ..utils import edt_prob, _normalize_grid
 from ..geometry import star_dist, dist_to_coord, polygons_to_label
 from ..nms import non_maximum_suppression
 
+from IPython.core.debugger import set_trace
 
 
 class StarDistData2D(StarDistDataBase):
@@ -36,27 +37,34 @@ class StarDistData2D(StarDistDataBase):
         self.shape_completion = bool(shape_completion)
         if self.shape_completion and b > 0:
             self.b = slice(b,-b),slice(b,-b)
+            self.bb = slice(b,-b) ## bb used to slice easily for np array  (which don't accept tuple as slicing input)
         else:
             self.b = slice(None),slice(None)
+            self.bb = slice(None)
 
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
 
 
     def __getitem__(self, i):
-        idx = slice(i*self.batch_size,(i+1)*self.batch_size)
-        idx = list(self.perm[idx])
-
-        arrays = [sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
+        idx = slice(i*self.batch_size,(i+1)*self.batch_size) # here the idx progresses in step of batch_size as the i progresses
+        idx = list(self.perm[idx]) # the self.perm is an array of index that will be shuffled at the end of epoch
+        
+        # the output from the sample_patches is also a list..... so basically we turn a list of list into a n-dim array
+        arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
                                  patch_size=self.patch_size, n_samples=1,
-                                 valid_inds=self.get_valid_inds(k)) for k in idx]
+                                 valid_inds=self.get_valid_inds(k)) for k in idx])
 
-        if self.n_channel is None:
-            X, Y = list(zip(*[(x[0][self.b],y[0]) for y,x in arrays]))
-        else:
-            X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1)[self.b], y[0]) for y,*x in arrays]))
-
-        X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
-
+#         if self.n_channel is None:
+#             X, Y = list(zip(*[(x[0][self.b],y[0]) for y,x in arrays]))
+#         else:
+#             X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1)[self.b], y[0]) for y,*x in arrays]))
+        X = np.squeeze(arrays[1,...,self.bb,self.bb])   #the elipsis at second dimension is reserved for channels>1, but not tested
+        Y = np.squeeze(arrays[0,...,self.bb,self.bb]).astype('uint16')
+        
+#         X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
+        # The albumatation package took dict with image, mask as key as input
+        X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)]) ## output XX, YY are tuples so we can plug them back into the pipe
+    
         prob = np.stack([edt_prob(lbl[self.b]) for lbl in Y])
 
         if self.shape_completion:
@@ -66,7 +74,7 @@ class StarDistData2D(StarDistDataBase):
         else:
             dist      = np.stack([star_dist(lbl,self.n_rays,mode=self.sd_mode) for lbl in Y])
             dist_mask = prob
-
+        
         X = np.stack(X)
         if X.ndim == 3: # input image has no channel axis
             X = np.expand_dims(X,-1)
@@ -79,8 +87,10 @@ class StarDistData2D(StarDistDataBase):
         dist      = dist[self.ss_grid]
 
         return [X,dist_mask], [prob,dist]
-
-
+    
+    def on_epoch_end(self):
+        print('sequence getitem on_epoch_end: shuffle the self.perm index list (by the StarDistDataBase class )')
+    
 
 class Config2D(BaseConfig):
     """Configuration for a :class:`StarDist2D` model.
@@ -276,7 +286,7 @@ class StarDist2D(StarDistBase):
                                     padding='same', activation=self.config.unet_activation)(pooled_img)
             pooled_img = MaxPooling2D(pool)(pooled_img)
 
-        unet        = unet_block(**unet_kwargs)(pooled_img)
+            unet       = unet_block(**unet_kwargs)(pooled_img)
         if self.config.net_conv_after_unet > 0:
             unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
                              name='features', padding='same', activation=self.config.unet_activation)(unet)
@@ -372,6 +382,7 @@ class StarDist2D(StarDistBase):
                 _n = min(3, self.config.n_rays)
                 cb.output_slices = [[slice(None)]*4,[slice(None)]*4]
                 cb.output_slices[1][1+axes_dict(self.config.axes)['C']] = slice(0,(self.config.n_rays//_n)*_n,self.config.n_rays//_n)
+                cb.write_graph = True
 
         history = self.keras_model.fit_generator(generator=data_train, validation_data=data_val,
                                                  epochs=epochs, steps_per_epoch=steps_per_epoch,

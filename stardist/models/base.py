@@ -96,7 +96,8 @@ class StarDistDataBase(Sequence):
         self.perm = np.random.permutation(len(self.X))
         self.use_gpu = bool(use_gpu)
         if augmenter is None:
-            augmenter = lambda *args: args
+#             augmenter = lambda *args: args
+            augmenter = lambda **kwargs: kwargs
         callable(augmenter) or _raise(ValueError("augmenter must be None or callable"))
         self.augmenter = augmenter
         self.foreground_prob = foreground_prob
