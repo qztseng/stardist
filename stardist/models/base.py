@@ -21,6 +21,7 @@ from csbdeep.data import Resizer
 from .sample_patches import get_valid_inds
 from ..utils import _is_power_of_2, optimize_threshold
 
+from pdb import set_trace
 
 # TODO: support (optional) classification of objects?
 # TODO: helper function to check if receptive field of cnn is sufficient for object sizes in GT
@@ -219,7 +220,7 @@ class StarDistBase(BaseModel):
 
             if self.config.train_tensorboard:
                 # self.callbacks.append(TensorBoard(log_dir=str(self.logdir), write_graph=False))
-                self.callbacks.append(CARETensorBoard(log_dir=str(self.logdir), prefix_with_timestamp=False, n_images=3, write_images=True, prob_out=False))
+                self.callbacks.append(CARETensorBoard(log_dir=str(self.logdir), prefix_with_timestamp=True, n_images=3, write_images=True, prob_out=False, write_graph=True))
 
         if self.config.train_reduce_lr is not None:
             rlrop_params = self.config.train_reduce_lr
@@ -267,6 +268,7 @@ class StarDistBase(BaseModel):
             img.ndim == len(n_tiles) or _raise(TypeError())
         except TypeError:
             raise ValueError("n_tiles must be an iterable of length %d" % img.ndim)
+                
         all(np.isscalar(t) and 1<=t and int(t)==t for t in n_tiles) or _raise(
             ValueError("all values of n_tiles must be integer values >= 1"))
         n_tiles = tuple(map(int,n_tiles))
@@ -276,7 +278,7 @@ class StarDistBase(BaseModel):
 
         _permute_axes = self._make_permute_axes(axes, axes_net)
         x = _permute_axes(img) # x has axes_net semantics
-
+        
         channel = axes_dict(axes_net)['C']
         self.config.n_channel_in == x.shape[channel] or _raise(ValueError())
         axes_net_div_by = self._axes_div_by(axes_net)
@@ -311,7 +313,7 @@ class StarDistBase(BaseModel):
 
             n_block_overlaps = [int(np.ceil(overlap/blocksize)) for overlap, blocksize
                                 in zip(axes_net_tile_overlaps, axes_net_div_by)]
-
+            
             for tile, s_src, s_dst in tqdm(tile_iterator(x, n_tiles, block_sizes=axes_net_div_by, n_block_overlaps=n_block_overlaps),
                                            disable=(not show_tile_progress), total=np.prod(n_tiles)):
                 prob_tile, dist_tile = predict_direct(tile)

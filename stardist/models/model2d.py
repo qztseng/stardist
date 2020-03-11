@@ -58,14 +58,14 @@ class StarDistData2D(StarDistDataBase):
 #             X, Y = list(zip(*[(x[0][self.b],y[0]) for y,x in arrays]))
 #         else:
 #             X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1)[self.b], y[0]) for y,*x in arrays]))
-        X = np.squeeze(arrays[1,...,self.bb,self.bb])   #the elipsis at second dimension is reserved for channels>1, but not tested
-        Y = np.squeeze(arrays[0,...,self.bb,self.bb]).astype('uint16')
+        X = arrays[1,...,self.bb,self.bb]   #the elipsis at second dimension is reserved for channels>1, but not tested
+        Y = arrays[0,...,self.bb,self.bb].astype('uint16')
         
 #         X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
         # The albumatation package took dict with image, mask as key as input
         X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)]) ## output XX, YY are tuples so we can plug them back into the pipe
     
-        prob = np.stack([edt_prob(lbl[self.b]) for lbl in Y])
+        prob = np.stack([edt_prob(lbl[self.bb]) for lbl in Y])  ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
 
         if self.shape_completion:
             Y_cleared = [clear_border(lbl) for lbl in Y]
@@ -89,7 +89,7 @@ class StarDistData2D(StarDistDataBase):
         return [X,dist_mask], [prob,dist]
     
     def on_epoch_end(self):
-        print('sequence getitem on_epoch_end: shuffle the self.perm index list (by the StarDistDataBase class )')
+        print("sequence getitem on_epoch_end: shuffle the self.perm index list (by the StarDistDataBase class )")
     
 
 class Config2D(BaseConfig):
@@ -286,7 +286,7 @@ class StarDist2D(StarDistBase):
                                     padding='same', activation=self.config.unet_activation)(pooled_img)
             pooled_img = MaxPooling2D(pool)(pooled_img)
 
-            unet       = unet_block(**unet_kwargs)(pooled_img)
+        unet       = unet_block(**unet_kwargs)(pooled_img)
         if self.config.net_conv_after_unet > 0:
             unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
                              name='features', padding='same', activation=self.config.unet_activation)(unet)
@@ -362,7 +362,6 @@ class StarDist2D(StarDistBase):
             use_gpu          = self.config.use_gpu,
             foreground_prob  = self.config.train_foreground_only,
         )
-
         # generate validation data and store in numpy arrays
         data_val = StarDistData2D(*validation_data, batch_size=1, **data_kwargs)
         n_data_val = len(data_val)
@@ -375,14 +374,13 @@ class StarDist2D(StarDistBase):
         data_val = [[Xv,Mv],[Pv,Dv]]
 
         data_train = StarDistData2D(X, Y, batch_size=self.config.train_batch_size, augmenter=augmenter, **data_kwargs)
-
+                
         for cb in self.callbacks:
             if isinstance(cb,CARETensorBoard):
                 # show dist for three rays
                 _n = min(3, self.config.n_rays)
                 cb.output_slices = [[slice(None)]*4,[slice(None)]*4]
                 cb.output_slices[1][1+axes_dict(self.config.axes)['C']] = slice(0,(self.config.n_rays//_n)*_n,self.config.n_rays//_n)
-                cb.write_graph = True
 
         history = self.keras_model.fit_generator(generator=data_train, validation_data=data_val,
                                                  epochs=epochs, steps_per_epoch=steps_per_epoch,
