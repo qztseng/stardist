@@ -214,7 +214,8 @@ class Config2D(BaseConfig):
         # the parameter 'min_delta' was called 'epsilon' for keras<=2.1.5
         min_delta_key = 'epsilon' if LooseVersion(keras.__version__)<=LooseVersion('2.1.5') else 'min_delta'
         self.train_reduce_lr           = {'factor': 0.5, 'patience': 40, min_delta_key: 0}
-
+        # implement one cycle learning rate training policy 
+        self.train_one_cycle_lr_max          = None    
         self.use_gpu                   = False
 
         # remove derived attributes that shouldn't be overwritten

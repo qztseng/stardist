@@ -21,6 +21,8 @@ from csbdeep.data import Resizer
 from .sample_patches import get_valid_inds
 from ..utils import _is_power_of_2, optimize_threshold
 
+from one_cycle_lr.one_cycle_scheduler import OneCycleScheduler
+
 from pdb import set_trace
 
 # TODO: support (optional) classification of objects?
@@ -227,6 +229,10 @@ class StarDistBase(BaseModel):
             if 'verbose' not in rlrop_params:
                 rlrop_params['verbose'] = True
             self.callbacks.append(ReduceLROnPlateau(**rlrop_params))
+
+        if self.config.train_one_cycle_lr_max is not None:
+            lrmax = self.config.train_one_cycle_lr_max
+            self.callbacks.append(OneCycleScheduler(max_lr=lrmax))
 
         self._model_prepared = True
 
