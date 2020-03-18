@@ -8,8 +8,9 @@ from tqdm import tqdm
 from distutils.version import LooseVersion
 import keras
 import keras.backend as K
-from keras.layers import Input, Conv2D, MaxPooling2D
+from keras.layers import Input, Conv2D, MaxPooling2D, Activation, Layer
 from keras.models import Model
+from keras.utils.generic_utils import get_custom_objects    ## for custom activation function
 
 from csbdeep.models import BaseConfig
 from csbdeep.internals.blocks import unet_block
@@ -88,8 +89,8 @@ class StarDistData2D(StarDistDataBase):
 
         return [X,dist_mask], [prob,dist]
     
-    def on_epoch_end(self):
-        print("sequence getitem on_epoch_end: shuffle the self.perm index list (by the StarDistDataBase class )")
+#    def on_epoch_end(self):
+#        print("sequence getitem on_epoch_end: shuffle the self.perm index list (by the StarDistDataBase class )")
     
 
 class Config2D(BaseConfig):
@@ -215,7 +216,9 @@ class Config2D(BaseConfig):
         min_delta_key = 'epsilon' if LooseVersion(keras.__version__)<=LooseVersion('2.1.5') else 'min_delta'
         self.train_reduce_lr           = {'factor': 0.5, 'patience': 40, min_delta_key: 0}
         # implement one cycle learning rate training policy 
-        self.train_one_cycle_lr_max          = None    
+        self.train_one_cycle_lr_max          = None
+        # implement constrained distance output range. If we have a know range of object(nucleus) radius to predict
+        self.y_range = [0.0,self.train_patch_size[0]/(2*self.grid[0])]
         self.use_gpu                   = False
 
         # remove derived attributes that shouldn't be overwritten
@@ -225,6 +228,32 @@ class Config2D(BaseConfig):
 
         self.update_parameters(False, **kwargs)
 
+# custom activation function (fixed parameters)
+def output_to_y_range(x, y_min, y_max):
+    return (y_max-y_min) * K.sigmoid(x) + y_min
+
+# get_custom_objects().update({'custom_activation': Activation(custom_activation)})
+# get_custom_objects().update({'ranged_sig': Activation(lambda x: output_to_y_range(x, y_min, y_max))})
+# custom activation layer (function) to constrain the output within a given range
+
+class RangedSig(Layer):
+
+
+    def __init__(self, y_min, y_max, **kwargs):
+        super(RangedSig, self).__init__(**kwargs)
+        self.y_min = K.cast_to_floatx(y_min)
+        self.y_max = K.cast_to_floatx(y_max)
+
+    def call(self, inputs):
+        return (self.y_max - self.y_min)*K.sigmoid(inputs) + self.y_min
+
+    def get_config(self):
+        config = {'y_min': float(self.alpha)}
+        base_config = super(RangedSig, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
 
 
 class StarDist2D(StarDistBase):
@@ -293,7 +322,13 @@ class StarDist2D(StarDistBase):
                              name='features', padding='same', activation=self.config.unet_activation)(unet)
 
         output_prob  = Conv2D(1,                  (1,1), name='prob', padding='same', activation='sigmoid')(unet)
-        output_dist  = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+        if self.config.y_range is not None: 
+            y_min = self.config.y_range[0]
+            y_max = self.config.y_range[1]
+            output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
+        else:
+            output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+#        output_dist  = RangedSig(y_min=self.config.dist_min, y_max=self.config.dist_max)(output_dist0)
         return Model([input_img,input_mask], [output_prob,output_dist])
 
 
@@ -412,7 +447,6 @@ class StarDist2D(StarDistBase):
             tuple(p**self.config.unet_n_depth * g for p,g in zip(self.config.unet_pool,self.config.grid))
         ))
         return tuple(div_by.get(a,1) for a in query_axes)
-
 
     # def _axes_tile_overlap(self, query_axes):
     #     self.config.backbone == 'unet' or _raise(NotImplementedError())
