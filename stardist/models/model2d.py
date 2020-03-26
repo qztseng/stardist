@@ -201,6 +201,7 @@ class Config2D(BaseConfig):
         self.train_shape_completion    = False
         self.train_completion_crop     = 32
         self.train_patch_size          = 256,256
+        self.norm_by_mask              = True   ## whether the dist loss will be normalized by mean(mask)
         self.train_background_reg      = 1e-4
         self.train_foreground_only     = 0.9
 
@@ -332,7 +333,7 @@ class StarDist2D(StarDistBase):
         return Model([input_img,input_mask], [output_prob,output_dist])
 
 
-    def train(self, X, Y, validation_data, augmenter=None, seed=None, epochs=None, steps_per_epoch=None):
+    def train(self, X, Y, validation_data, augmenter=None, seed=None, epochs=None, steps_per_epoch=None, multi=False, ncpu=1):
         """Train the neural network with the given data.
 
         Parameters
@@ -420,7 +421,7 @@ class StarDist2D(StarDistBase):
 
         history = self.keras_model.fit_generator(generator=data_train, validation_data=data_val,
                                                  epochs=epochs, steps_per_epoch=steps_per_epoch,
-                                                 callbacks=self.callbacks, verbose=1)
+                                                 callbacks=self.callbacks, verbose=1, use_multiprocessing=multi, workers=ncpu)
         self._training_finished()
 
         return history
