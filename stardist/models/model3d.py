@@ -59,7 +59,9 @@ class StarDistData3D(StarDistDataBase):
         else:
             X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1), y[0]) for y,*x in arrays]))
 
-        X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
+#        X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
+#       To fit into the modified StarDistDataBase class where augmenter took dict (kwargs) instead of args
+        X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)])
 
         if len(Y) == 1:
             X = X[0][np.newaxis]
@@ -246,9 +248,13 @@ class Config3D(BaseConfig):
         self.train_batch_size          = 1
         self.train_n_val_patches       = None
         self.train_tensorboard         = True
+        # for the dist loss function parameter
+        self.norm_by_mask              = True
         # the parameter 'min_delta' was called 'epsilon' for keras<=2.1.5
         min_delta_key = 'epsilon' if LooseVersion(keras.__version__)<=LooseVersion('2.1.5') else 'min_delta'
         self.train_reduce_lr           = {'factor': 0.5, 'patience': 40, min_delta_key: 0}
+        # parameter for the one cycle learning rate policy
+        self.train_one_cycle_lr_max    = None
 
         self.use_gpu                   = False
 
