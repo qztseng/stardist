@@ -8,7 +8,7 @@ from tqdm import tqdm
 from distutils.version import LooseVersion
 import keras
 import keras.backend as K
-from keras.layers import Input, Conv2D, MaxPooling2D, Activation, Layer
+from keras.layers import Input, Conv2D, MaxPooling2D, Activation, Layer, Dropout
 from keras.models import Model
 from keras.utils.generic_utils import get_custom_objects    ## for custom activation function
 
@@ -207,10 +207,11 @@ class Config2D(BaseConfig):
         self.train_shape_completion    = False
         self.train_completion_crop     = 32
         self.train_patch_size          = 256,256
-        self.norm_by_mask              = True   ## whether the dist loss will be normalized by mean(mask)
+        ## whether the dist loss will be normalized by mean(mask)
+        self.norm_by_mask              = True           
         self.train_background_reg      = 1e-4
         self.train_foreground_only     = 0.9
-
+   
         self.train_dist_loss           = 'mae'
         self.train_loss_weights        = 1,0.2
         self.train_epochs              = 400
@@ -222,10 +223,15 @@ class Config2D(BaseConfig):
         # the parameter 'min_delta' was called 'epsilon' for keras<=2.1.5
         min_delta_key = 'epsilon' if LooseVersion(keras.__version__)<=LooseVersion('2.1.5') else 'min_delta'
         self.train_reduce_lr           = {'factor': 0.5, 'patience': 40, min_delta_key: 0}
-        # implement one cycle learning rate training policy 
+        ## implement one cycle learning rate training policy 
         self.train_one_cycle_lr_max          = None
-        # implement constrained distance output range. If we have a know range of object(nucleus) radius to predict
+        ## implement constrained distance output range. If we have a know range of object(nucleus) radius to predict
         self.y_range = [0.0,self.train_patch_size[0]/(2*self.grid[0])]
+        ## implement EDT probability threshold, prob value below threshold will be set to zero
+        self.EDT_prob_threshold = 0
+        ## implement dropout layer and droprate after the feature layer
+        self.feature_dropout = 0
+
         self.use_gpu                   = False
 
         # remove derived attributes that shouldn't be overwritten
@@ -327,6 +333,8 @@ class StarDist2D(StarDistBase):
         if self.config.net_conv_after_unet > 0:
             unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
                              name='features', padding='same', activation=self.config.unet_activation)(unet)
+        ## extra dropout layer after the feature layer
+        unet = Dropout(rate = self.config.feature_dropout)(unet)
 
         output_prob  = Conv2D(1,                  (1,1), name='prob', padding='same', activation='sigmoid')(unet)
         if self.config.y_range is not None: 
@@ -404,7 +412,8 @@ class StarDist2D(StarDistBase):
             b                = self.config.train_completion_crop,
             use_gpu          = self.config.use_gpu,
             foreground_prob  = self.config.train_foreground_only,
-        )
+            prob_thr         = self.config.EDT_prob_threshold
+            )
         # generate validation data and store in numpy arrays
         data_val = StarDistData2D(*validation_data, batch_size=1, **data_kwargs)
         n_data_val = len(data_val)
