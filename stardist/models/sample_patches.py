@@ -45,8 +45,19 @@ def get_valid_inds(datas, patch_size, patch_filter = None):
         patch_mask = patch_filter(datas[0], patch_size)
 
     # get the valid indices
-
+    # to get the pixel indices for cropping(sample patches) so that each patches will not extend outside the image dimension
+    # for example, a image of (520, 696) and patch_size = (256,256) will give valid index ranges from (128,393), (128,569)
+    # which means among above ranges patches of 256,256 could be safely drawn without getting outside the image dimension
+    # ind is the x,y of the patch center pixel. 
+    # can be considered as a valid crop region 
     border_slices = tuple([slice(p // 2, s - p + p // 2 + 1) for p, s in zip(patch_size, datas[0].shape)])
+    # the first valid_inds is just tuple of two 1D arrays, row index for 0 to (border_slices[0].start - border_slices[0].end )
+    # so that a zip of the 2 arrays will give the x,y index to select within the valid crop region
     valid_inds = np.where(patch_mask[border_slices])
+    # here the starting pixel of the border_slices is added to the above inds so that it will be starting at 
+    # the border_slices.start rather than 0
     valid_inds = tuple(v + s.start for s, v in zip(border_slices, valid_inds))
+    # for patch_filter = None, the valid_inds is just all the x,y indices within the valid crop region
+    # so that later on when calling sample patches it will just randomly pick one (or n) indeces and -,+ patch_size//2 to 
+    # specify the crop region
     return valid_inds
