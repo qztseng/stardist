@@ -29,7 +29,7 @@ from IPython.core.debugger import set_trace
 
 class StarDistData2D(StarDistDataBase):
 
-    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), shape_completion=False, augmenter=None, foreground_prob=0, **kwargs):
+    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None, foreground_prob=0, **kwargs):
 
         super().__init__(X=X, Y=Y, n_rays=n_rays, grid=grid,
                          batch_size=batch_size, patch_size=patch_size,
@@ -44,7 +44,8 @@ class StarDistData2D(StarDistDataBase):
             self.bb = slice(None)
 
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
-
+        ## set the threshold for EDT. Probability < thr will be set to 0
+        self.prob_thr = prob_thr
 
     def __getitem__(self, i):
         idx = slice(i*self.batch_size,(i+1)*self.batch_size) # here the idx progresses in step of batch_size as the i progresses
@@ -54,19 +55,22 @@ class StarDistData2D(StarDistDataBase):
         arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
                                  patch_size=self.patch_size, n_samples=1,
                                  valid_inds=self.get_valid_inds(k)) for k in idx])
-
+        ## arrays has a dimension of (2, bs, patch_sizeX, patch_sizeY)
 #         if self.n_channel is None:
 #             X, Y = list(zip(*[(x[0][self.b],y[0]) for y,x in arrays]))
 #         else:
 #             X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1)[self.b], y[0]) for y,*x in arrays]))
         X = arrays[1,...,self.bb,self.bb]   #the elipsis at second dimension is reserved for channels>1, but not tested
         Y = arrays[0,...,self.bb,self.bb].astype('uint16')
-        
+        ## X has a dimension of (bs, patch_sizeX, patch_sizeY)
+
 #         X, Y = tuple(zip(*tuple(self.augmenter(_x, _y) for _x, _y in zip(X,Y))))
         # The albumatation package took dict with image, mask as key as input
-        X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)]) ## output XX, YY are tuples so we can plug them back into the pipe
-    
-        prob = np.stack([edt_prob(lbl[self.bb]) for lbl in Y])  ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
+        X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)]) 
+        ## output X, Y are tuples so we can plug them back into the pipe
+        ## X tuple has length of bs, X[0] has dimension of (patch_sizeX, patch_sizeY)
+
+        prob = np.stack([edt_prob(lbl[self.bb], threshold=self.prob_thr) for lbl in Y])  ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
 
         if self.shape_completion:
             Y_cleared = [clear_border(lbl) for lbl in Y]
@@ -77,6 +81,8 @@ class StarDistData2D(StarDistDataBase):
             dist_mask = prob
         
         X = np.stack(X)
+        ## Turn tuple into array, X.shape = (bs,patch_sizeX, patch_sizeY)
+
         if X.ndim == 3: # input image has no channel axis
             X = np.expand_dims(X,-1)
         prob = np.expand_dims(prob,-1)
@@ -466,3 +472,44 @@ class StarDist2D(StarDistBase):
     @property
     def _config_class(self):
         return Config2D
+
+class SampleX2D(StarDistDataBase):
+    '''
+    This is a dirty helper class to use the existing data generator (with augmentation support), 
+    so that we can generate fixed sized patches from any image dataset without the mask (Y). 
+    The filename or labels of the orignal images will also be returned. 
+    '''
+    def __init__(self, X, batch_size, shuffle=False, patch_size=(256,256), b=32, grid=(1,1), 
+                 shape_completion=False, augmenter=None, foreground_prob=0, **kwargs):
+
+        super().__init__(X=X, Y=X, n_rays=2, grid=grid,
+                         batch_size=batch_size, patch_size=patch_size,
+                         augmenter=augmenter, foreground_prob=foreground_prob, **kwargs)
+        self.shuffle = shuffle
+        self.shape_completion = bool(shape_completion)
+        if self.shape_completion and b > 0:
+            self.b = slice(b,-b),slice(b,-b)
+            self.bb = slice(b,-b) ## bb used to slice easily for np array  (which don't accept tuple as slicing input)
+        else:
+            self.b = slice(None),slice(None)
+            self.bb = slice(None)
+
+    def __getitem__(self, i):
+        idx = slice(i*self.batch_size,(i+1)*self.batch_size)
+        if self.shuffle:
+            idx = list(self.perm[idx])
+        else:
+            idx = list(np.arange(0,len(self.X))[idx])
+            #idx = np.arange(i*self.batch_size, (i+1)*self.batch_size)
+
+        arrays = np.hstack([sample_patches(self.channels_as_tuple(self.X[k]),
+                            patch_size=self.patch_size, n_samples=1,
+                            valid_inds=self.get_valid_inds(k)) for k in idx])
+
+        X = arrays[0,...,self.bb,self.bb]   #the elipsis at second dimension is reserved for channels>1, but not tested
+        X = [self.augmenter(**{"image":_x})['image'] for _x in X] #the list() turns the dict_value into indexable list
+        X = np.stack(X)
+        if X.ndim == 3: # input image has no channel axis
+            X = np.expand_dims(X,-1)
+
+        return X, idx

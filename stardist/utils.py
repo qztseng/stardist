@@ -73,7 +73,7 @@ def _edt_prob(lbl_img, anisotropy=None):
     return prob
 
 
-def edt_prob(lbl_img, anisotropy=None):
+def edt_prob(lbl_img,threshold=0, anisotropy=None):
     """Perform EDT on each labeled object and normalize."""
     def grow(sl,interior):
         return tuple(slice(s.start-int(w[0]),s.stop+int(w[1])) for s,w in zip(sl,interior))
@@ -101,6 +101,12 @@ def edt_prob(lbl_img, anisotropy=None):
         prob[sl][mask] = edt/(np.max(edt)+1e-10)
     if constant_img:
         prob = prob[(slice(1,-1),)*lbl_img.ndim].copy()
+    
+    ### add threshold to set value below threshold to 0 
+    if threshold>0:
+        idx_below = prob < threshold
+        prob[idx_below] = 0
+
     return prob
 
 

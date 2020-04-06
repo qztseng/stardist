@@ -350,6 +350,38 @@ class StarDistBase(BaseModel):
 
         return prob, dist
 
+    def prepare_input(self, img, axes='YX', normalizer=None):
+        """
+        experimental function to extract normalized/resized input for prediction on hidden layers ##
+        basically a copy of the original predict function
+        currently only assume 2D n_tiles = (1,1)
+        """
+           
+        n_tiles = [1]*img.ndim
+        n_tiles = tuple(map(int,n_tiles))
+
+        axes     = self._normalize_axes(img, axes)
+        axes_net = self.config.axes
+        _permute_axes = self._make_permute_axes(axes, axes_net)
+        x = _permute_axes(img) # x has axes_net semantics
+
+        channel = axes_dict(axes_net)['C']
+        self.config.n_channel_in == x.shape[channel] or _raise(ValueError())
+        axes_net_div_by = self._axes_div_by(axes_net)
+
+        grid = tuple(self.config.grid)
+        len(grid) == len(axes_net)-1 or _raise(ValueError())
+        grid_dict = dict(zip(axes_net.replace('C',''),grid))
+
+        normalizer = self._check_normalizer_resizer(normalizer, None)[0]
+        resizer = StarDistPadAndCropResizer(grid=grid_dict)
+
+        x = normalizer.before(x, axes_net)
+        x = resizer.before(x, axes_net, axes_net_div_by)
+
+        sh = list(x.shape); sh[channel] = 1; dummy = np.empty(sh,np.float32)
+
+        return x[np.newaxis], dummy[np.newaxis]
 
     def predict_instances(self, img, axes=None, normalizer=None,
                           prob_thresh=None, nms_thresh=None,
