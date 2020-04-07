@@ -193,6 +193,9 @@ class Config2D(BaseConfig):
             self.unet_dropout          = 0.0
             self.unet_prefix           = ''
             self.net_conv_after_unet   = 128
+            ## add unet kernel initialization params
+            self.unet_kernel_init           = 'he_uniform'
+
         else:
             # TODO: resnet backbone for 2D model?
             raise ValueError("backbone '%s' not supported." % self.backbone)
