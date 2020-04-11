@@ -29,7 +29,7 @@ from IPython.core.debugger import set_trace
 
 class StarDistData2D(StarDistDataBase):
 
-    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None, foreground_prob=0, **kwargs):
+    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None, foreground_prob=0, shuffle_start=True, **kwargs):
 
         super().__init__(X=X, Y=Y, n_rays=n_rays, grid=grid,
                          batch_size=batch_size, patch_size=patch_size,
@@ -49,7 +49,8 @@ class StarDistData2D(StarDistDataBase):
 
     def __getitem__(self, i):
         idx = slice(i*self.batch_size,(i+1)*self.batch_size) # here the idx progresses in step of batch_size as the i progresses
-        idx = list(self.perm[idx]) # the self.perm is an array of index that will be shuffled at the end of epoch
+        if shuffle_start: idx = list(self.perm[idx]) 
+        else: idx = list(np.arange(0,len(self.X))[idx])
         
         # the output from the sample_patches is also a list..... so basically we turn a list of list into a n-dim array
         arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
@@ -245,8 +246,8 @@ class Config2D(BaseConfig):
         self.update_parameters(False, **kwargs)
 
 # custom activation function (fixed parameters)
-def output_to_y_range(x, y_min, y_max):
-    return (y_max-y_min) * K.sigmoid(x) + y_min
+#def output_to_y_range(x, y_min, y_max):
+#    return (y_max-y_min) * K.sigmoid(x) + y_min
 
 # get_custom_objects().update({'custom_activation': Activation(custom_activation)})
 # get_custom_objects().update({'ranged_sig': Activation(lambda x: output_to_y_range(x, y_min, y_max))})
@@ -264,7 +265,7 @@ class RangedSig(Layer):
         return (self.y_max - self.y_min)*K.sigmoid(inputs) + self.y_min
 
     def get_config(self):
-        config = {'y_min': float(self.alpha)}
+        config = {'y_min': float(self.y_min), 'y_max': float(self.y_max)}
         base_config = super(RangedSig, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
@@ -310,8 +311,9 @@ class StarDist2D(StarDistBase):
 
 
     def _build(self):
-        self.config.backbone == 'unet' or _raise(NotImplementedError())
-
+        #self.config.backbone == 'unet'|'unet2' or _raise(NotImplementedError())
+        self.config.backbone in ('unet','unet2') or _raise(NotImplementedError())
+        
         input_img  = Input(self.config.net_input_shape, name='input')
         if backend_channels_last():
             grid_shape = tuple(n//g if n is not None else None for g,n in zip(self.config.grid, self.config.net_mask_shape[:-1])) + (1,)
@@ -332,21 +334,37 @@ class StarDist2D(StarDistBase):
                                     padding='same', activation=self.config.unet_activation)(pooled_img)
             pooled_img = MaxPooling2D(pool)(pooled_img)
 
-        unet       = unet_block(**unet_kwargs)(pooled_img)
-        if self.config.net_conv_after_unet > 0:
-            unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
-                             name='features', padding='same', activation=self.config.unet_activation)(unet)
-        ## extra dropout layer after the feature layer
-        unet = Dropout(rate = self.config.feature_dropout)(unet)
+        if(self.config.backbone == 'unet2'):
+            unet       = unet_block2(**unet_kwargs)(pooled_img)
+            if self.config.net_conv_after_unet > 0:
+                unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
+                                 name='features', padding='same', activation=self.config.unet_activation)(unet)
+                ## extra dropout layer after the feature layer
+                unet = Dropout(rate = self.config.feature_dropout)(unet)
 
-        output_prob  = Conv2D(1,                  (1,1), name='prob', padding='same', activation='sigmoid')(unet)
-        if self.config.y_range is not None: 
-            y_min = self.config.y_range[0]
-            y_max = self.config.y_range[1]
-            output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
+            output_prob  = Conv2D(1, (1,1), name='prob', padding='same', activation='sigmoid',kernel_initializer='glorot_uniform' )(unet)
+            output_dist  = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+            output_dist  = RangedSig(y_min=self.config.dist_min, y_max=self.config.dist_max, name='rangedSig')(output_dist)
+           
+#           if self.config.y_range is not None: 
+#                y_min = self.config.y_range[0]
+#                y_max = self.config.y_range[1]
+#                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', 
+#                                     activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
+#            else:
+#                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+        
         else:
+            unet       = unet_block(**unet_kwargs)(pooled_img)
+
+            if self.config.net_conv_after_unet > 0:
+                unet    = Conv2D(self.config.net_conv_after_unet, self.config.unet_kernel_size,
+                                 name='features', padding='same', activation=self.config.unet_activation)(unet)
+
+            output_prob  = Conv2D(1,                  (1,1), name='prob', padding='same', activation='sigmoid')(unet)
             output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
-#        output_dist  = RangedSig(y_min=self.config.dist_min, y_max=self.config.dist_max)(output_dist0)
+
+
         return Model([input_img,input_mask], [output_prob,output_dist])
 
 
