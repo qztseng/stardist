@@ -212,6 +212,7 @@ class StarDistBase(BaseModel):
         input_mask = self.keras_model.inputs[1] # second input layer is mask for dist loss
         dist_loss = {'mse': masked_loss_mse, 'mae': masked_loss_mae}[self.config.train_dist_loss](input_mask, reg_weight=self.config.train_background_reg, norm_by_mask=self.config.norm_by_mask)
         prob_loss = 'binary_crossentropy'
+        #prob_loss = 'mean_squared_error'
         self.keras_model.compile(optimizer, loss=[prob_loss, dist_loss],
                                             loss_weights = list(self.config.train_loss_weights),
                                             metrics={'prob': kld, 'dist': [masked_metric_mae(input_mask),masked_metric_mse(input_mask)]})

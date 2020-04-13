@@ -13,7 +13,7 @@ from keras.models import Model
 from keras.utils.generic_utils import get_custom_objects    ## for custom activation function
 
 from csbdeep.models import BaseConfig
-from csbdeep.internals.blocks import unet_block
+from csbdeep.internals.blocks import unet_block, unet_block2
 from csbdeep.utils import _raise, backend_channels_last, axes_check_and_normalize, axes_dict
 from csbdeep.utils.tf import CARETensorBoard
 from skimage.segmentation import clear_border
@@ -46,10 +46,12 @@ class StarDistData2D(StarDistDataBase):
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
         ## set the threshold for EDT. Probability < thr will be set to 0
         self.prob_thr = prob_thr
+        ## set whether data generator will shuffle data upon start
+        self.shuffle_start = shuffle_start
 
     def __getitem__(self, i):
         idx = slice(i*self.batch_size,(i+1)*self.batch_size) # here the idx progresses in step of batch_size as the i progresses
-        if shuffle_start: idx = list(self.perm[idx]) 
+        if self.shuffle_start: idx = list(self.perm[idx]) 
         else: idx = list(np.arange(0,len(self.X))[idx])
         
         # the output from the sample_patches is also a list..... so basically we turn a list of list into a n-dim array
@@ -182,7 +184,7 @@ class Config2D(BaseConfig):
         self.backbone                  = str(backbone).lower()
 
         # default config (can be overwritten by kwargs below)
-        if self.backbone == 'unet':
+        if self.backbone in ('unet', 'unet2'):
             self.unet_n_depth          = 3
             self.unet_kernel_size      = 3,3
             self.unet_n_filter_base    = 32
@@ -195,7 +197,8 @@ class Config2D(BaseConfig):
             self.unet_prefix           = ''
             self.net_conv_after_unet   = 128
             ## add unet kernel initialization params
-            self.unet_kernel_init           = 'he_uniform'
+            if self.backbone == 'unet2':
+                self.unet_kernel_init  = 'he_uniform'
 
         else:
             # TODO: resnet backbone for 2D model?
@@ -230,7 +233,8 @@ class Config2D(BaseConfig):
         ## implement one cycle learning rate training policy 
         self.train_one_cycle_lr_max          = None
         ## implement constrained distance output range. If we have a know range of object(nucleus) radius to predict
-        self.y_range = [0.0,self.train_patch_size[0]/(2*self.grid[0])]
+        #self.y_range = [0.0,self.train_patch_size[0]/(2*self.grid[0])]
+        self.y_range = None
         ## implement EDT probability threshold, prob value below threshold will be set to zero
         self.EDT_prob_threshold = 0
         ## implement dropout layer and droprate after the feature layer
@@ -344,13 +348,14 @@ class StarDist2D(StarDistBase):
 
             output_prob  = Conv2D(1, (1,1), name='prob', padding='same', activation='sigmoid',kernel_initializer='glorot_uniform' )(unet)
             output_dist  = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
-            output_dist  = RangedSig(y_min=self.config.dist_min, y_max=self.config.dist_max, name='rangedSig')(output_dist)
+            if self.config.y_range is not None: 
+                output_dist  = RangedSig(y_min=self.config.y_range[0], y_max=self.config.y_range[1], name='rangedSig')(output_dist)
            
 #           if self.config.y_range is not None: 
 #                y_min = self.config.y_range[0]
 #                y_max = self.config.y_range[1]
 #                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', 
-#                                     activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
+#               ==                       activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
 #            else:
 #                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
         
@@ -476,7 +481,7 @@ class StarDist2D(StarDistBase):
 
 
     def _axes_div_by(self, query_axes):
-        self.config.backbone == 'unet' or _raise(NotImplementedError())
+        self.config.backbone in ('unet', 'unet2') or _raise(NotImplementedError())
         query_axes = axes_check_and_normalize(query_axes)
         assert len(self.config.unet_pool) == len(self.config.grid)
         div_by = dict(zip(
