@@ -12,6 +12,7 @@ from scipy.optimize import minimize_scalar
 from skimage.measure import regionprops
 from csbdeep.utils import _raise
 from csbdeep.utils.six import Path
+from edt import edtsq as edt_func
 
 from .matching import matching_dataset
 
@@ -49,11 +50,12 @@ def _normalize_grid(grid,n):
 
 def _edt_dist_func(anisotropy):
     try:
-        from edt import edt as edt_func
+        from edt import edtsq as edt_func
         # raise ImportError()
-        dist_func = lambda img: edt_func(np.ascontiguousarray(img>0), anisotropy=anisotropy)
+        dist_func = lambda img: edt_func(np.ascontiguousarray(img>0), anisotropy=anisotropy, black_border=True, parallel=-1)
     except ImportError:
-        dist_func = lambda img: distance_transform_edt(img, sampling=anisotropy)
+        #dist_func = lambda img: distance_transform_edt(img, sampling=anisotropy)
+        raise ImportError()
     return dist_func
 
 
@@ -98,7 +100,9 @@ def edt_prob(lbl_img,threshold=0, anisotropy=None):
         grown_mask = lbl_img[grow(sl,interior)]==i
         mask = grown_mask[shrink_slice]
         edt = dist_func(grown_mask)[shrink_slice][mask]
+        #edt = dist_func(mask)[mask]
         prob[sl][mask] = edt/(np.max(edt)+1e-10)
+        #prob[sl][mask] = edt
     if constant_img:
         prob = prob[(slice(1,-1),)*lbl_img.ndim].copy()
     
@@ -109,6 +113,40 @@ def edt_prob(lbl_img,threshold=0, anisotropy=None):
 
     return prob
 
+def edt_prob2(lbl_img,threshold=0, border_R=16, border=False, anisotropy=None):
+    """Perform EDT on each labeled object and normalize.
+       Objects touching any borders will be normalized to 
+       border_R if its max edt < border_R
+       If the edt function is edtsq (not calculating the square root),
+       then the border_R should be set to the sqaure of the minimum 
+       expected border object radius. 
+    """
+    constant_img = lbl_img.min() == lbl_img.max() and lbl_img.flat[0] > 0
+    if constant_img:
+        lbl_img = np.pad(lbl_img, ((1,1),)*lbl_img.ndim, mode='constant')
+        warnings.warn("EDT of constant label image is ill-defined. (Assuming background around it.)")
+	
+    edt_full = edt_func(lbl_img, black_border=border, parallel=-1)
+    objects = find_objects(lbl_img)
+    prob = np.zeros(lbl_img.shape,np.float32)
+    for i,sl in enumerate(objects,1):
+        if sl is None: continue
+        interior = [(s.start>0,s.stop<sz) for s,sz in zip(sl,lbl_img.shape)]
+        mask = (lbl_img[sl]==i) ##== grown_mask[shrink_slice]
+        edt_mask = edt_full[sl][mask]
+        if(np.array(interior).all()): ##not touching any border ?
+            prob[sl][mask] = edt_mask/(np.max(edt_mask)+1e-10)
+        else:  ## touched at least one border
+            prob[sl][mask] = edt_mask/max(np.max(edt_mask),border_R)
+    if constant_img:
+        prob = prob[(slice(1,-1),)*lbl_img.ndim].copy()
+
+    ### add threshold to set value below threshold to 0 
+    if threshold>0:
+        idx_below = prob < threshold
+        prob[idx_below] = 0
+
+    return prob
 
 def _fill_label_holes(lbl_img, **kwargs):
     lbl_img_filled = np.zeros_like(lbl_img)

@@ -23,7 +23,9 @@ from ..utils import _is_power_of_2, optimize_threshold
 
 from one_cycle_lr.one_cycle_scheduler import OneCycleScheduler
 
-from pdb import set_trace
+from tensorflow.contrib import distributions  ## for the percentile
+
+#from pdb import set_trace
 
 # TODO: support (optional) classification of objects?
 # TODO: helper function to check if receptive field of cnn is sufficient for object sizes in GT
@@ -68,6 +70,24 @@ def kld(y_true, y_pred):
     y_pred = K.clip(y_pred, K.epsilon(), 1)
     return K.mean(K.binary_crossentropy(y_true, y_pred) - K.binary_crossentropy(y_true, y_true), axis=-1)
 
+def huber_loss(delta=0.2):
+    def _loss(y_true, y_pred):
+        error = y_pred - y_true
+        abs_error = K.abs(error)
+        quadratic = K.minimum(abs_error, delta)
+        linear = abs_error - quadratic
+        return 0.5 * K.square(quadratic) + delta * linear
+    return _loss
+
+def huber_loss_percentile(delta=0.2, pcl=99.95):
+    def _loss(y_true, y_pred):
+        error = y_pred - y_true
+        abs_error = K.abs(error)
+        quadratic = K.minimum(abs_error, delta)
+        linear = abs_error - quadratic
+        hl = 0.5 * K.square(quadratic) + delta * linear
+        return distributions.percentile(hl, q=pcl, axis=[1,2])    
+    return _loss
 
 
 class StarDistDataBase(Sequence):
@@ -211,7 +231,9 @@ class StarDistBase(BaseModel):
 
         input_mask = self.keras_model.inputs[1] # second input layer is mask for dist loss
         dist_loss = {'mse': masked_loss_mse, 'mae': masked_loss_mae}[self.config.train_dist_loss](input_mask, reg_weight=self.config.train_background_reg, norm_by_mask=self.config.norm_by_mask)
-        prob_loss = 'binary_crossentropy'
+        #prob_loss = huber_loss(delta=0.5)
+        prob_loss = huber_loss_percentile(delta=0.5, pcl=99.95)
+        #prob_loss = 'binary_crossentropy'
         #prob_loss = 'mean_squared_error'
         self.keras_model.compile(optimizer, loss=[prob_loss, dist_loss],
                                             loss_weights = list(self.config.train_loss_weights),

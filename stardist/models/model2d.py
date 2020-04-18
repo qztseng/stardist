@@ -20,7 +20,7 @@ from skimage.segmentation import clear_border
 
 from .base import StarDistBase, StarDistDataBase
 from .sample_patches import sample_patches
-from ..utils import edt_prob, _normalize_grid
+from ..utils import edt_prob, _normalize_grid, edt_prob2
 from ..geometry import star_dist, dist_to_coord, polygons_to_label
 from ..nms import non_maximum_suppression
 
@@ -29,7 +29,7 @@ from IPython.core.debugger import set_trace
 
 class StarDistData2D(StarDistDataBase):
 
-    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None, foreground_prob=0, shuffle_start=True, **kwargs):
+    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None,                  foreground_prob=0, border_R=25, black_border=True, shuffle_start=True, **kwargs):
 
         super().__init__(X=X, Y=Y, n_rays=n_rays, grid=grid,
                          batch_size=batch_size, patch_size=patch_size,
@@ -44,6 +44,10 @@ class StarDistData2D(StarDistDataBase):
             self.bb = slice(None)
 
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
+        ## set the minimum radius for border object normalization in EDT
+        self.border_R = border_R
+        ## set whether the EDT function will use edge to compute distances
+        self.black_border = black_border
         ## set the threshold for EDT. Probability < thr will be set to 0
         self.prob_thr = prob_thr
         ## set whether data generator will shuffle data upon start
@@ -73,7 +77,8 @@ class StarDistData2D(StarDistDataBase):
         ## output X, Y are tuples so we can plug them back into the pipe
         ## X tuple has length of bs, X[0] has dimension of (patch_sizeX, patch_sizeY)
 
-        prob = np.stack([edt_prob(lbl[self.bb], threshold=self.prob_thr) for lbl in Y])  ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
+        prob = np.stack([edt_prob2(lbl[self.bb], threshold=self.prob_thr, border_R=self.border_R, border=self.black_border) for lbl in Y])  
+        ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
 
         if self.shape_completion:
             Y_cleared = [clear_border(lbl) for lbl in Y]
@@ -239,6 +244,9 @@ class Config2D(BaseConfig):
         self.EDT_prob_threshold = 0
         ## implement dropout layer and droprate after the feature layer
         self.feature_dropout = 0
+        ## implement EDT border constraint
+        self.EDT_border_R = 9
+        self.EDT_black_border = False
 
         self.use_gpu                   = False
 
@@ -438,7 +446,9 @@ class StarDist2D(StarDistBase):
             b                = self.config.train_completion_crop,
             use_gpu          = self.config.use_gpu,
             foreground_prob  = self.config.train_foreground_only,
-            prob_thr         = self.config.EDT_prob_threshold
+            prob_thr         = self.config.EDT_prob_threshold,
+            border_R         = self.config.EDT_border_R,
+            black_border     = self.config.EDT_black_border
             )
         # generate validation data and store in numpy arrays
         data_val = StarDistData2D(*validation_data, batch_size=1, **data_kwargs)
