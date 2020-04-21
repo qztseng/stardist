@@ -258,8 +258,8 @@ class Config2D(BaseConfig):
         self.update_parameters(False, **kwargs)
 
 # custom activation function (fixed parameters)
-#def output_to_y_range(x, y_min, y_max):
-#    return (y_max-y_min) * K.sigmoid(x) + y_min
+def output_to_y_range(x, y_min, y_max):
+    return (y_max-y_min) * K.sigmoid(x) + y_min
 
 # get_custom_objects().update({'custom_activation': Activation(custom_activation)})
 # get_custom_objects().update({'ranged_sig': Activation(lambda x: output_to_y_range(x, y_min, y_max))})
@@ -375,7 +375,14 @@ class StarDist2D(StarDistBase):
                                  name='features', padding='same', activation=self.config.unet_activation)(unet)
 
             output_prob  = Conv2D(1,                  (1,1), name='prob', padding='same', activation='sigmoid')(unet)
-            output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+            if self.config.y_range is not None: 
+                y_min = self.config.y_range[0]
+                y_max = self.config.y_range[1]
+                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', 
+                                     activation=Activation(lambda x: output_to_y_range(x, y_min, y_max)))(unet)
+            else:
+                output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+#           output_dist = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
 
 
         return Model([input_img,input_mask], [output_prob,output_dist])
