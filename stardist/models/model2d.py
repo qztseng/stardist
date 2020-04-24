@@ -29,7 +29,7 @@ from IPython.core.debugger import set_trace
 
 class StarDistData2D(StarDistDataBase):
 
-    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None,                  foreground_prob=0, border_R=25, black_border=True, shuffle_start=True, **kwargs):
+    def __init__(self, X, Y, batch_size, n_rays, patch_size=(256,256), b=32, grid=(1,1), prob_thr=0, shape_completion=False, augmenter=None,                  foreground_prob=0, border_R=25, black_border=True, shuffle_start=True, sample_inds=None, **kwargs):
 
         super().__init__(X=X, Y=Y, n_rays=n_rays, grid=grid,
                          batch_size=batch_size, patch_size=patch_size,
@@ -52,14 +52,22 @@ class StarDistData2D(StarDistDataBase):
         self.prob_thr = prob_thr
         ## set whether data generator will shuffle data upon start
         self.shuffle_start = shuffle_start
+        ## set a fixed index for sample_patches, so that the patches can be reporducible
+        self.sample_inds = sample_inds
 
     def __getitem__(self, i):
         idx = slice(i*self.batch_size,(i+1)*self.batch_size) # here the idx progresses in step of batch_size as the i progresses
         if self.shuffle_start: idx = list(self.perm[idx]) 
         else: idx = list(np.arange(0,len(self.X))[idx])
         
+        ## make an alternative sampling function which takes the fix index for patch sampling (for reporducibility)
+        if self.sample_inds is not None:
+            arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
+                                 patch_size=self.patch_size, n_samples=1,
+                                 valid_inds=self.sample_inds) for k in idx])
         # the output from the sample_patches is also a list..... so basically we turn a list of list into a n-dim array
-        arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
+        else:
+            arrays = np.hstack([sample_patches((self.Y[k],) + self.channels_as_tuple(self.X[k]),
                                  patch_size=self.patch_size, n_samples=1,
                                  valid_inds=self.get_valid_inds(k)) for k in idx])
         ## arrays has a dimension of (2, bs, patch_sizeX, patch_sizeY)
@@ -355,9 +363,11 @@ class StarDist2D(StarDistBase):
                 unet = Dropout(rate = self.config.feature_dropout)(unet)
 
             output_prob  = Conv2D(1, (1,1), name='prob', padding='same', activation='sigmoid',kernel_initializer='glorot_uniform' )(unet)
-            output_dist  = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
-            if self.config.y_range is not None: 
-                output_dist  = RangedSig(y_min=self.config.y_range[0], y_max=self.config.y_range[1], name='rangedSig')(output_dist)
+            if self.config.y_range is None:
+                output_dist  = Conv2D(self.config.n_rays, (1,1), name='dist', padding='same', activation='linear')(unet)
+            else: 
+                output_dist  = Conv2D(self.config.n_rays, (1,1), name='linear', padding='same', activation='linear')(unet)
+                output_dist  = RangedSig(y_min=self.config.y_range[0], y_max=self.config.y_range[1], name='dist')(output_dist)
            
 #           if self.config.y_range is not None: 
 #                y_min = self.config.y_range[0]

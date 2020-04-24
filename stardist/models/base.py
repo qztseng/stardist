@@ -30,9 +30,9 @@ from tensorflow.contrib import distributions  ## for the percentile
 # TODO: support (optional) classification of objects?
 # TODO: helper function to check if receptive field of cnn is sufficient for object sizes in GT
 
-def generic_masked_loss(mask, loss, weights=1, norm_by_mask=True, reg_weight=0, reg_penalty=K.abs):
+def generic_masked_loss(mask, loss, weights=3, norm_by_mask=True, reg_weight=0, reg_penalty=K.abs):
     def _loss(y_true, y_pred):
-        actual_loss = K.mean(mask * weights * loss(y_true, y_pred), axis=-1)
+        actual_loss = K.mean(K.pow(mask, weights) * loss(y_true, y_pred), axis=-1)
         norm_mask = (K.mean(mask) + K.epsilon()) if norm_by_mask else 1
         if reg_weight > 0:
             reg_loss = K.mean((1-mask) * reg_penalty(y_pred), axis=-1)
@@ -70,23 +70,9 @@ def kld(y_true, y_pred):
     y_pred = K.clip(y_pred, K.epsilon(), 1)
     return K.mean(K.binary_crossentropy(y_true, y_pred) - K.binary_crossentropy(y_true, y_true), axis=-1)
 
-def huber_loss(delta=0.2):
+def weighted_mse_loss(mask, weight=3):
     def _loss(y_true, y_pred):
-        error = y_pred - y_true
-        abs_error = K.abs(error)
-        quadratic = K.minimum(abs_error, delta)
-        linear = abs_error - quadratic
-        return 0.5 * K.square(quadratic) + delta * linear
-    return _loss
-
-def huber_loss_percentile(delta=0.2, pcl=99.95):
-    def _loss(y_true, y_pred):
-        error = y_pred - y_true
-        abs_error = K.abs(error)
-        quadratic = K.minimum(abs_error, delta)
-        linear = abs_error - quadratic
-        hl = 0.5 * K.square(quadratic) + delta * linear
-        return distributions.percentile(hl, q=pcl, axis=[1,2])    
+        return K.exp(K.abs(0.5-mask)*weight)*K.square(y_true - y_pred)
     return _loss
 
 
@@ -231,10 +217,11 @@ class StarDistBase(BaseModel):
 
         input_mask = self.keras_model.inputs[1] # second input layer is mask for dist loss
         dist_loss = {'mse': masked_loss_mse, 'mae': masked_loss_mae}[self.config.train_dist_loss](input_mask, reg_weight=self.config.train_background_reg, norm_by_mask=self.config.norm_by_mask)
-        prob_loss = huber_loss(delta=0.05)
-        #prob_loss = huber_loss_percentile(delta=0.1, pcl=99.95)
+        #prob_loss = {'huber':huber_loss(delta=self.config.train_huber_delta), 'mae':'mean_absolute_error', 'bce':'binary_crossentropy', 'mse':'mean_square_error'}[self.config.train_prob_loss]
         #prob_loss = 'binary_crossentropy'
-        #prob_loss = 'mean_squared_error'
+        prob_loss = weighted_mse_loss(input_mask, weight=3)
+        
+        
         self.keras_model.compile(optimizer, loss=[prob_loss, dist_loss],
                                             loss_weights = list(self.config.train_loss_weights),
                                             metrics={'prob': kld, 'dist': [masked_metric_mae(input_mask),masked_metric_mse(input_mask)]})
