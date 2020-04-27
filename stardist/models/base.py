@@ -30,9 +30,10 @@ from tensorflow.contrib import distributions  ## for the percentile
 # TODO: support (optional) classification of objects?
 # TODO: helper function to check if receptive field of cnn is sufficient for object sizes in GT
 
-def generic_masked_loss(mask, loss, weights=3, norm_by_mask=True, reg_weight=0, reg_penalty=K.abs):
+def generic_masked_loss(mask, loss, weights=1, norm_by_mask=True, reg_weight=0, reg_penalty=K.abs):
     def _loss(y_true, y_pred):
-        actual_loss = K.mean(K.pow(mask, weights) * loss(y_true, y_pred), axis=-1)
+        #actual_loss = K.mean(K.pow(mask, weights) * loss(y_true, y_pred), axis=-1)
+        actual_loss = K.mean(mask * weights * loss(y_true, y_pred), axis=-1) 
         norm_mask = (K.mean(mask) + K.epsilon()) if norm_by_mask else 1
         if reg_weight > 0:
             reg_loss = K.mean((1-mask) * reg_penalty(y_pred), axis=-1)
@@ -55,6 +56,10 @@ def masked_loss_mae(mask, reg_weight=0, norm_by_mask=True):
 def masked_loss_mse(mask, reg_weight=0, norm_by_mask=True):
     return masked_loss(mask, K.square, reg_weight=reg_weight, norm_by_mask=norm_by_mask)
 
+def masked_loss_mape(mask, reg_weight=0, norm_by_mask=True):
+    loss = lambda y_true, y_pred: 100. * K.abs((y_true - y_pred) / K.clip(K.abs(y_true), K.epsilon(), None))
+    return generic_masked_loss(mask, loss, reg_weight=reg_weight, norm_by_mask=norm_by_mask)
+
 def masked_metric_mae(mask):
     def relevant_mae(y_true, y_pred):
         return masked_loss(mask, K.abs, reg_weight=0, norm_by_mask=True)(y_true, y_pred)
@@ -70,11 +75,37 @@ def kld(y_true, y_pred):
     y_pred = K.clip(y_pred, K.epsilon(), 1)
     return K.mean(K.binary_crossentropy(y_true, y_pred) - K.binary_crossentropy(y_true, y_true), axis=-1)
 
-def weighted_mse_loss(mask, weight=3):
+def weighted_mse_loss(mask, weight=1):
     def _loss(y_true, y_pred):
-        return K.exp(K.abs(0.5-mask)*weight)*K.square(y_true - y_pred)
+        mask_p = K.pool2d(mask, (5,5), strides=(1, 1), padding='same', pool_mode='max', data_format="channels_last")
+        #return K.exp(K.abs(0.5-mask)*weight)*K.square(y_true - y_pred)
+        return K.exp(mask_p * weight) * K.square(y_true - y_pred)
     return _loss
 
+def cosine_mse_loss(mask, offset=1.1):
+    def _loss(y_true, y_pred):
+        cos_weight = (K.cos(2*math.pi*mask)+offset)/2
+        return cos_weight * K.square(y_true - y_pred)
+    return _loss
+
+def cosine_bce_loss(mask, offset=0.0):
+    def _loss(y_true, y_pred):
+        #mask_p = K.pool2d(mask, (5,5), strides=(1, 1), padding='same', pool_mode='max', data_format="channels_last")
+        cos_weight = K.clip(K.cos(2*math.pi*mask)+offset, min_value=0, max_value=None)    
+        return cos_weight * K.binary_crossentropy(y_true, y_pred)
+    return _loss
+
+def cosine_bce_clipped_loss(mask, offset=0.0):
+    def _loss(y_true, y_pred):
+        cos_weight = K.clip(K.cos(2*math.pi*mask)+offset, min_value=0, max_value=None)    
+        return K.sum(K.clip((cos_weight * K.binary_crossentropy(y_true, y_pred)) - 0.5, 0, None), axis=(1,2))
+    return _loss
+
+def weighted_bce_loss(mask, weight=2):
+    def _loss(y_true, y_pred):
+        mask_p = K.pool2d(mask, (3,3), strides=(1, 1), padding='same', pool_mode='max', data_format="channels_last")    
+        return (mask_p + 1.) * K.binary_crossentropy(y_true, y_pred)
+    return _loss
 
 class StarDistDataBase(Sequence):
 
@@ -119,6 +150,7 @@ class StarDistDataBase(Sequence):
             self.max_filter = lambda y, patch_size: maximum_filter(y, patch_size, mode='constant')
 
         self.maxfilter_patch_size = maxfilter_patch_size if maxfilter_patch_size is not None else self.patch_size
+
 
         self.sample_ind_cache = sample_ind_cache
         self._ind_cache_fg  = {}
@@ -216,11 +248,19 @@ class StarDistBase(BaseModel):
             optimizer = Adam(lr=self.config.train_learning_rate)
 
         input_mask = self.keras_model.inputs[1] # second input layer is mask for dist loss
+        
+        ## do a maxpooling(maximum filter) on the distance map (input_mask) to further emphasize pixel regions where we need to put more weights 
+        #mask_pool = K.pool2d(input_mask, (5,5), strides=(1, 1), padding='same', pool_mode='max', data_format="channels_last") 
+
         dist_loss = {'mse': masked_loss_mse, 'mae': masked_loss_mae}[self.config.train_dist_loss](input_mask, reg_weight=self.config.train_background_reg, norm_by_mask=self.config.norm_by_mask)
         #prob_loss = {'huber':huber_loss(delta=self.config.train_huber_delta), 'mae':'mean_absolute_error', 'bce':'binary_crossentropy', 'mse':'mean_square_error'}[self.config.train_prob_loss]
-        #prob_loss = 'binary_crossentropy'
-        prob_loss = weighted_mse_loss(input_mask, weight=3)
         
+        dist_loss = masked_loss_mape(input_mask, reg_weight=self.config.train_background_reg, norm_by_mask=self.config.norm_by_mask)
+        #prob_loss = 'binary_crossentropy'
+        #prob_loss = weighted_mse_loss(input_mask, weight=1)
+        #prob_loss = cosine_bce_loss(input_mask, offset=0.5) 
+        prob_loss = cosine_bce_clipped_loss(input_mask, offset=0.5)
+        #prob_loss = weighted_bce_loss(input_mask, weight=1)
         
         self.keras_model.compile(optimizer, loss=[prob_loss, dist_loss],
                                             loss_weights = list(self.config.train_loss_weights),

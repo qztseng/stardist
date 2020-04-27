@@ -42,6 +42,9 @@ class StarDistData2D(StarDistDataBase):
         else:
             self.b = slice(None),slice(None)
             self.bb = slice(None)
+        
+        ## subsampling grid without bs dimension
+        self.ss_grid2 = tuple(slice(0, None, g) for g in grid) 
 
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
         ## set the minimum radius for border object normalization in EDT
@@ -75,6 +78,7 @@ class StarDistData2D(StarDistDataBase):
 #             X, Y = list(zip(*[(x[0][self.b],y[0]) for y,x in arrays]))
 #         else:
 #             X, Y = list(zip(*[(np.stack([_x[0] for _x in x],axis=-1)[self.b], y[0]) for y,*x in arrays]))
+        
         X = arrays[1,...,self.bb,self.bb]   #the elipsis at second dimension is reserved for channels>1, but not tested
         Y = arrays[0,...,self.bb,self.bb].astype('uint16')
         ## X has a dimension of (bs, patch_sizeX, patch_sizeY)
@@ -84,9 +88,13 @@ class StarDistData2D(StarDistDataBase):
         X, Y = zip(*[self.augmenter(**{"image":_x,"mask": _y}).values() for _x, _y in zip(X,Y)]) 
         ## output X, Y are tuples so we can plug them back into the pipe
         ## X tuple has length of bs, X[0] has dimension of (patch_sizeX, patch_sizeY)
+        
+        ## subsample Y before the edt
+        Y_sub = [arr[self.ss_grid2] for arr in Y]
 
-        prob = np.stack([edt_prob2(lbl[self.bb], threshold=self.prob_thr, border_R=self.border_R, border=self.black_border) for lbl in Y])  
-        ##Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
+        #prob = np.stack([edt_prob(lbl[self.bb], threshold=self.prob_thr) for lbl in Y])  
+        prob = np.stack([edt_prob2(lbl[self.bb], threshold=self.prob_thr, border_R=self.border_R, border=self.black_border) for lbl in Y_sub])
+        #Y is tuple but lbl is array, so need to slice with slice(self.bb) instead of tuple(self.b)
 
         if self.shape_completion:
             Y_cleared = [clear_border(lbl) for lbl in Y]
@@ -105,8 +113,8 @@ class StarDistData2D(StarDistDataBase):
         dist_mask = np.expand_dims(dist_mask,-1)
 
         # subsample wth given grid
-        dist_mask = dist_mask[self.ss_grid]
-        prob      = prob[self.ss_grid]
+        #dist_mask = dist_mask[self.ss_grid]
+        #prob      = prob[self.ss_grid]
         dist      = dist[self.ss_grid]
 
         return [X,dist_mask], [prob,dist]
